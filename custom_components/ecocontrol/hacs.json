@@ -1,0 +1,8 @@
+{
+  "name": "ecoControl Floor Heating",
+  "content_type": "integration",
+  "domains": [
+    "ecocontrol"
+  ],
+  "homeassistant": "2024.1.0"
+}
