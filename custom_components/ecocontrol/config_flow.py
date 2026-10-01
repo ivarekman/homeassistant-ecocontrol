@@ -28,6 +28,17 @@ def parse_name_from_mfr(mfr_bytes: bytes) -> str | None:
     except Exception:
         return None
 
+def parse_floor_temp_from_mfr(mfr_bytes: bytes) -> float | None:
+    """🚀 Passively extracts and decodes the floor temperature out of index 0."""
+    if len(mfr_bytes) < 1:
+        return None
+
+    try:
+        # Index 0 stores the raw floor temperature directly scaled by 10
+        raw_floor = int(mfr_bytes[0])
+        return round(float(raw_floor) / 10.0, 1)
+    except Exception:
+        return None
 
 class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for ecoControl Floor Heating using passive BLE data."""
@@ -64,9 +75,10 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if ECOCONTROL_MFR_ID in adv.manufacturer_data:
                 mfr_payload = adv.manufacturer_data[ECOCONTROL_MFR_ID]
                 parsed_name = parse_name_from_mfr(mfr_payload)
+                parsed_temp = parse_floor_temp_from_mfr(mfr_payload)
 
                 if parsed_name:
-                    self._discovered_devices[device.address] = f"{parsed_name} [{device.address}]"
+                    self._discovered_devices[device.address] = f"{parsed_name} ({parsed_temp}°C) [{device.address}]"
 
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")

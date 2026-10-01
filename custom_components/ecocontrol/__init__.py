@@ -97,7 +97,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if floor_raw is not None:
                         floor_temp = round(floor_raw / 10.0, 1)
                     if desired_raw is not None:
-                        desired_temp = 5.0 if desired_raw == 80 else round(desired_raw / 10.0, 1)
+                        desired_temp = round(desired_raw / 10.0, 1)
 
                 return {
                     "name": name,
