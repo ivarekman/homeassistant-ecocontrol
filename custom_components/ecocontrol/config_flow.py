@@ -60,10 +60,10 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if bluetooth.async_scanner_count(self.hass) == 0:
             return self.async_abort(reason="bluetooth_not_available")
 
-        # 2. Check user input when a button is submitted
+        # 2. Processing user form submissions
         if user_input is not None:
-            # If the schema was empty, user_input will be an empty dictionary {}
-            if "device" not in user_input:
+            # Checks if the user checked the "Refresh" box or submitted on an empty screen ("device" key doesn't exist)
+            if user_input.get("refresh") or "device" not in user_input:
                 await asyncio.sleep(3.0)  # Pauses to allow background BLE engine to populate cache
                 return await self.async_step_user(user_input=None)
 
@@ -86,7 +86,6 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="bluetooth_scan_failed")
 
         self._discovered_devices = {}
-
         for device in discovered:
             adv = device.advertisement
             if not adv or not adv.manufacturer_data:
@@ -100,8 +99,8 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if parsed_name:
                     self._discovered_devices[device.address] = f"{parsed_name} ({parsed_temp}°C) [{device.address}]"
 
-        # 4. If cache is empty, return a form with an empty schema.
-        # This renders as a clean window with a single text warning and a "Submit" button to retry.
+        # 4. Shown if adapter is  found but cache is empty.
+        # This renders as a clean window with a "Submit" button to retry (no checkbox).
         if not self._discovered_devices:
             return self.async_show_form(
                 step_id="user",
@@ -114,21 +113,40 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema({
                 vol.Required("device"): vol.In(self._discovered_devices),
+                # Show Refresh function under the list dropdown
+                vol.Optional("refresh", default=False): bool
             }),
             errors=errors,
         )
+
+    async def async_step_bluetooth(
+        self, discovery_info: bluetooth.BluetoothServiceInfoBleak
+    ) -> FlowResult:
+        """Handle background discovery triggered by Home Assistant's central BLE engine."""
+        address = discovery_info.address
+        await self.async_set_unique_id(address.replace(":", "").lower())
+        self._abort_if_unique_id_configured()
+
+        mfr_payload = discovery_info.advertisement.manufacturer_data.get(ECOCONTROL_MFR_ID)
+        parsed_name = parse_name_from_mfr(mfr_payload) if mfr_payload else "ecoControl Heater"
+        parsed_temp = parse_floor_temp_from_mfr(mfr_payload) if mfr_payload else None
+        
+        display_label = f"{parsed_name} ({parsed_temp}°C) [{address}]" if parsed_temp else f"{parsed_name} [{address}]"
+        self._discovered_devices[address] = display_label
+
+        return await self.async_step_user()
 
     @staticmethod
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
-        """🚀 Link the custom Options Flow menu handler to this integration."""
+        """Link custom Options Flow menu handler to this integration."""
         return EcoControlOptionsFlowHandler(config_entry)
 
 
 class EcoControlOptionsFlowHandler(config_entries.OptionsFlow):
-    """🚀 Options Flow menu handler to update parameters live via the UI."""
+    """Options Flow menu handler to update parameters live via the UI."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize the options flow using the base class pattern."""
