@@ -1,5 +1,6 @@
 """Config flow for ecoControl Floor Heating."""
 
+import asyncio
 from typing import Any
 import voluptuous as vol
 
@@ -52,25 +53,33 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle the device selection step when the user initiates configuration."""
+        """Handle the device selection step with dynamic scanning feedback."""
         errors: dict[str, str] = {}
 
-        # 1. Check if Bluetooth integration is loaded and actively scanning
+        # 1. Hardware State Verification (Ensure Bluetooth engine is running adapters)
         if bluetooth.async_scanner_count(self.hass) == 0:
             return self.async_abort(reason="bluetooth_not_available")
 
+        # 2. Check user input when a button is submitted
         if user_input is not None:
-            address = user_input["device"]
-            name = self._discovered_devices[address]
-            await self.async_set_unique_id(address.replace(":", "").lower())
-            self._abort_if_unique_id_configured()
-            
-            return self.async_create_entry(
-                title=name, 
-                data={"address": address, "default_name": name}
-            )
+            # If the schema was empty, user_input will be an empty dictionary {}
+            if "device" not in user_input:
+                await asyncio.sleep(3.0)  # Pauses to allow background BLE engine to populate cache
+                return await self.async_step_user(user_input=None)
 
-        # 2. Safely grab discovered service info
+            # Otherwise, process the actual selected device configuration entry
+            address = user_input.get("device")
+            if address and address in self._discovered_devices:
+                name = self._discovered_devices[address]
+                await self.async_set_unique_id(address.replace(":", "").lower())
+                self._abort_if_unique_id_configured()
+                
+                return self.async_create_entry(
+                    title=name, 
+                    data={"address": address, "default_name": name}
+                )
+
+        # 3. Pull cached data from Home Assistant's background scanner engine
         try:
             discovered = bluetooth.async_discovered_service_info(self.hass)
         except Exception:
@@ -91,12 +100,21 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if parsed_name:
                     self._discovered_devices[device.address] = f"{parsed_name} ({parsed_temp}°C) [{device.address}]"
 
+        # 4. If cache is empty, return a form with an empty schema.
+        # This renders as a clean window with a single text warning and a "Submit" button to retry.
         if not self._discovered_devices:
-            return self.async_abort(reason="no_devices_found")
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema({}),
+                errors={"base": "no_devices_found_retry"}
+            )
 
+        # 5. Show normal selection dropdown list if devices are found
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required("device"): vol.In(self._discovered_devices)}),
+            data_schema=vol.Schema({
+                vol.Required("device"): vol.In(self._discovered_devices),
+            }),
             errors=errors,
         )
 
