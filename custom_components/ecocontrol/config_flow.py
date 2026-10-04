@@ -53,6 +53,12 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the device selection step when the user initiates configuration."""
+        errors: dict[str, str] = {}
+
+        # 1. Check if Bluetooth integration is loaded and actively scanning
+        if bluetooth.async_scanner_count(self.hass) == 0:
+            return self.async_abort(reason="bluetooth_not_available")
+
         if user_input is not None:
             address = user_input["device"]
             name = self._discovered_devices[address]
@@ -64,7 +70,12 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data={"address": address, "default_name": name}
             )
 
-        discovered = bluetooth.async_discovered_service_info(self.hass)
+        # 2. Safely grab discovered service info
+        try:
+            discovered = bluetooth.async_discovered_service_info(self.hass)
+        except Exception:
+            return self.async_abort(reason="bluetooth_scan_failed")
+
         self._discovered_devices = {}
 
         for device in discovered:
@@ -86,7 +97,7 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({vol.Required("device"): vol.In(self._discovered_devices)}),
-            errors={},
+            errors=errors,
         )
 
     @staticmethod
