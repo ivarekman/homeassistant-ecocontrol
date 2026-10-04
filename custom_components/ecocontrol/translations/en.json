@@ -1,0 +1,32 @@
+{
+  "config": {
+    "abort": {
+      "bluetooth_not_available": "No active Bluetooth adapters found. Please enable Bluetooth on your Home Assistant host device.",
+      "bluetooth_scan_failed": "The Bluetooth scanner failed to start.",
+      "already_configured": "This device is already configured."
+    },
+    "error": {
+      "no_devices_found_retry": "No ecoControl devices discovered yet. Ensure your device is nearby and powered on. Click 'Submit' below to run a fresh 3-second hardware scan."
+    },
+    "step": {
+      "user": {
+        "title": "Scan for ecoControl Devices",
+        "description": "Select an ecoControl floor heating unit discovered via Bluetooth scanning. Choose '🔄 Refresh / Scan Again' from the dropdown list to force a live rescan.",
+        "data": {
+          "device": "Discovered Units"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure ecoControl Options",
+        "description": "Adjust how often your Home Assistant updates tracking parameters.",
+        "data": {
+          "poll_interval": "Polling Interval (Seconds)"
+        }
+      }
+    }
+  }
+}
