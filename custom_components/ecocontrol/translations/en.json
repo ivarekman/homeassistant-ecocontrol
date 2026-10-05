@@ -11,7 +11,7 @@
     "step": {
       "user": {
         "title": "Scan for ecoControl Devices",
-        "description": "Select an ecoControl floor heating unit discovered via Bluetooth scanning. Choose '🔄 Refresh / Scan Again' from the dropdown list to force a live rescan.",
+        "description": "Select an ecoControl floor heating unit discovered via Bluetooth scanning. Choose the refresh option from the dropdown list to force a live rescan.",
         "data": {
           "device": "Discovered Units"
         }
@@ -26,6 +26,13 @@
         "data": {
           "poll_interval": "Polling Interval (Seconds)"
         }
+      }
+    }
+  },
+  "selector": {
+    "device": {
+      "options": {
+        "refresh_scan_again": "🔄 Refresh / Scan Again"
       }
     }
   }

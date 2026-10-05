@@ -23,7 +23,7 @@ UUID_HW = "2be32db1-5f6b-4cbd-8813-8d6dfb164900"
 UUID_SERIAL_SETPOINT = "2be32db1-5f6b-5bd8-8238-d6dfb1649000"
 UUID_DETAILS = "2be32db1-5f6b-4cbd-8843-8d6dfb164900"
 
-CONF_POLL_INTERVAL_LABEL = "Polling interval (seconds)"
+CONF_POLL_INTERVAL_LABEL = "poll_interval"
 DEFAULT_POLL_INTERVAL = 600 #10 minutes
 
 def clean_bytes_to_string(raw_bytes: bytes) -> str:
