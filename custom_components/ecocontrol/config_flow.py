@@ -14,7 +14,6 @@ from . import DOMAIN, DEFAULT_POLL_INTERVAL, CONF_POLL_INTERVAL_LABEL
 
 # Target Manufacturer Broadcast Profile ID
 ECOCONTROL_MFR_ID = 1162
-REFRESH_TRIGGER = "refresh_scan_again"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,7 +73,7 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             address = user_input.get("device")
 
             # Intercept manual menu refresh trigger requests
-            if address == REFRESH_TRIGGER or not address:
+            if address == "REFRESH_TRIGGER" or not address:
                 _LOGGER.debug("[ecoControl] Refresh triggered. Pausing 3s for BLE background cache to populate...")
                 # Clear background discovery isolation context on manual rescan
                 self._discovered_device = None
@@ -138,11 +137,11 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # 5. NORMAL DROPDOWN FORM: Displayed if devices are available in local stack
         menu_options = {
             **self._discovered_devices,
-            REFRESH_TRIGGER: REFRESH_TRIGGER
+            "REFRESH_TRIGGER": "🔄 Refresh / Scan Again"
         }
 
         # Set default to first discovered device, or fallback to the refresh action
-        default_selection = next(iter(self._discovered_devices.keys())) if self._discovered_devices else REFRESH_TRIGGER
+        default_selection = next(iter(self._discovered_devices.keys())) if self._discovered_devices else "REFRESH_TRIGGER"
 
         return self.async_show_form(
             step_id="user",

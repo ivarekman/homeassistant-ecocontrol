@@ -28,12 +28,5 @@
         }
       }
     }
-  },
-  "selector": {
-    "device": {
-      "options": {
-        "refresh_scan_again": "🔄 Refresh / Scan Again"
-      }
-    }
   }
 }
