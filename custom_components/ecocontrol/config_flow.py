@@ -118,10 +118,12 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     mfr_payload = adv.manufacturer_data[ECOCONTROL_MFR_ID]
                     parsed_name = parse_name_from_mfr(mfr_payload)
                     parsed_temp = parse_floor_temp_from_mfr(mfr_payload)
+                    p_flag = mfr_payload[2] if len(mfr_payload) >= 3 else 0
+                    is_heating_active = bool(p_flag & 0x80)
 
                     if parsed_name:
                         self._discovered_devices[device.address] = (
-                            f"{parsed_name} ({parsed_temp}°C) [{device.address}]"
+                            f"{parsed_name} ({parsed_temp}°C) {'🔥 Active (Heating)' if is_heating_active else '❄️ Idle (Balanced)'} [{device.address}]"
                         )
 
             _LOGGER.debug("[ecoControl] Filtered matching ecoControl units discovered: %d", len(self._discovered_devices))
@@ -166,7 +168,7 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         parsed_temp = parse_floor_temp_from_mfr(mfr_payload) if mfr_payload else None
         
         display_label = (
-            f"{parsed_name} ({parsed_temp}°C) [{address}]" 
+            f"{parsed_name} ({parsed_temp}°CA) [{address}]" 
             if parsed_temp else f"{parsed_name} [{address}]"
         )
         
