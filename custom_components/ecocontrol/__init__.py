@@ -1,7 +1,8 @@
 """The ecoControl Floor Heating integration."""
 
-import logging
+import asyncio
 from datetime import timedelta
+import logging
 import struct
 from typing import Any
 
@@ -24,7 +25,8 @@ UUID_SERIAL_SETPOINT = "2be32db1-5f6b-5bd8-8238-d6dfb1649000"
 UUID_DETAILS = "2be32db1-5f6b-4cbd-8843-8d6dfb164900"
 
 CONF_POLL_INTERVAL_LABEL = "poll_interval"
-DEFAULT_POLL_INTERVAL = 600 #10 minutes
+DEFAULT_POLL_INTERVAL = 600  # 10 minutes
+
 
 def clean_bytes_to_string(raw_bytes: bytes) -> str:
     """Safely decodes raw hardware byte buffers into clean strings."""
@@ -46,9 +48,65 @@ def unpack_uint16(payload: bytes, offset: int) -> int | None:
     return int(val_tuple[0])
 
 
+def parse_thermostat_payload(
+    raw_name: bytes,
+    raw_hw: bytes,
+    raw_serial_block: bytes,
+    raw_details: bytes,
+    fallback_name: str,
+) -> dict[str, Any]:
+    """Parse raw GATT binary arrays into a clean state dictionary."""
+    name = clean_bytes_to_string(raw_name) or fallback_name
+    
+    serial = None
+    if len(raw_serial_block) >= 15:
+        serial = clean_bytes_to_string(raw_serial_block[6:15])
+
+    hw_version = "4.0T"
+    software_version = None
+    # Isolate the exact trailing ASCII byte position safely to avoid TypeErrors
+    if len(raw_hw) >= 15 and raw_hw[14] > 0:
+        software_version = str(raw_hw[14])
+    
+    error_code = None
+    air_temp = None
+    floor_temp = None
+    desired_temp = None
+
+    if len(raw_details) >= 12:
+        error_code = unpack_uint16(raw_details, 0)
+        desired_raw = unpack_uint16(raw_details, 4)
+        air_raw = unpack_uint16(raw_details, 6)
+        floor_raw = unpack_uint16(raw_details, 8)
+
+        if air_raw is not None:
+            air_temp = round(air_raw / 10.0, 1)
+        if floor_raw is not None:
+            floor_temp = round(floor_raw / 10.0, 1)
+        if desired_raw is not None:
+            desired_temp = round(desired_raw / 10.0, 1)
+
+    return {
+        "name": name,
+        "hw_version": hw_version,
+        "software_version": software_version,
+        "serial": serial,
+        "error_code": error_code,
+        "air_temp": air_temp,
+        "floor_temp": floor_temp,
+        "desired_temp": desired_temp,
+    }
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up ecoControl from a config entry created via UI."""
     hass.data.setdefault(DOMAIN, {})
+    
+    # Shared hardware queue lock that keeps multiple devices from hammering the radio at once
+    if "connection_lock" not in hass.data[DOMAIN]:
+        hass.data[DOMAIN]["connection_lock"] = asyncio.Lock()
+        
+    connection_lock = hass.data[DOMAIN]["connection_lock"]
     address = entry.data["address"]
     fallback_name = entry.data["default_name"]
 
@@ -60,61 +118,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return coordinator.data
             raise UpdateFailed(f"Thermostat {address} not found in tracking histories")
 
-        try:
-            async with await establish_connection(
-                client_class=BleakClient, device=ble_device, name=fallback_name, use_services_cache=True, max_attempts=3
-            ) as client:
-                raw_name = await client.read_gatt_char(UUID_NAME)
-                raw_hw = await client.read_gatt_char(UUID_HW)
-                raw_serial_block = await client.read_gatt_char(UUID_SERIAL_SETPOINT)
-                raw_details = await client.read_gatt_char(UUID_DETAILS)
+        # Orderly queuing mechanism ensures coexisting apps never trigger slot starvation dropouts
+        async with connection_lock:
+            try:
+                async with await establish_connection(
+                    client_class=BleakClient,
+                    device=ble_device,
+                    name=fallback_name,
+                    use_services_cache=True,
+                    max_attempts=3
+                ) as client:
+                    raw_name = await client.read_gatt_char(UUID_NAME)
+                    raw_hw = await client.read_gatt_char(UUID_HW)
+                    raw_serial_block = await client.read_gatt_char(UUID_SERIAL_SETPOINT)
+                    raw_details = await client.read_gatt_char(UUID_DETAILS)
+                    # Connection yields the hardware handle safely right here upon exiting the block scope
+                    
+            except Exception as err:
+                if coordinator.data:
+                    _LOGGER.warning(
+                        "Thermostat %s [%s] connection dropped, utilizing cached states. Error: %s", 
+                        fallback_name, address, err
+                    )
+                    return coordinator.data
+                raise UpdateFailed(f"Bluetooth data handshake failed: {err}")
 
-                name = clean_bytes_to_string(raw_name) or fallback_name
-                
-                serial = None
-                if len(raw_serial_block) >= 15:
-                    serial = clean_bytes_to_string(raw_serial_block[6:15])
-
-                hw_version = "4.0T"
-                software_version = None
-                # Isolate the exact trailing ASCII byte position safely to avoid TypeErrors
-                if len(raw_hw) >= 15 and raw_hw[14] > 0:
-                    software_version = str(raw_hw[14])
-
-                error_code = None
-                air_temp = None
-                floor_temp = None
-                desired_temp = None
-
-                if len(raw_details) >= 12:
-                    error_code = unpack_uint16(raw_details, 0)
-                    desired_raw = unpack_uint16(raw_details, 4)
-                    air_raw = unpack_uint16(raw_details, 6)
-                    floor_raw = unpack_uint16(raw_details, 8)
-
-                    if air_raw is not None:
-                        air_temp = round(air_raw / 10.0, 1)
-                    if floor_raw is not None:
-                        floor_temp = round(floor_raw / 10.0, 1)
-                    if desired_raw is not None:
-                        desired_temp = round(desired_raw / 10.0, 1)
-
-                return {
-                    "name": name,
-                    "hw_version": hw_version,
-                    "software_version": software_version,
-                    "serial": serial,
-                    "error_code": error_code,
-                    "air_temp": air_temp,
-                    "floor_temp": floor_temp,
-                    "desired_temp": desired_temp,
-                }
-
-        except Exception as err:
-            if coordinator.data:
-                _LOGGER.debug("GATT fetch transaction dropped, using cached states: %s", err)
-                return coordinator.data
-            raise UpdateFailed(f"Bluetooth data handshake failed: {err}")
+        return parse_thermostat_payload(raw_name, raw_hw, raw_serial_block, raw_details, fallback_name)
 
     # Read live user configurations from options flow dynamically
     scan_interval = entry.options.get(CONF_POLL_INTERVAL_LABEL, entry.data.get(CONF_POLL_INTERVAL_LABEL, DEFAULT_POLL_INTERVAL))
@@ -128,12 +157,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-        # Retrieve the newly saved seconds value out of your options schema entry
         new_interval = entry.options.get(CONF_POLL_INTERVAL_LABEL, DEFAULT_POLL_INTERVAL)
         _LOGGER.info("Updating ecoControl polling loop interval dynamically to: %s seconds", new_interval)
         
         coordinator.update_interval = timedelta(seconds=int(new_interval))
-        
         await coordinator.async_request_refresh()
 
     entry.async_on_unload(entry.add_update_listener(update_listener))
