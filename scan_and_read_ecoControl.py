@@ -1,22 +1,32 @@
 import asyncio
 import logging
 import struct
-from typing import Any
+from typing import Any, Tuple, Dict
 from bleak import BleakScanner, BleakClient
 
-# Strict Keyword Boundaries
+# ==========================================
+# CONSTANTS & FILTER CRITERIA
+# ==========================================
 TARGET_KEYWORDS = ["tael", "tsense"]
 ECOCONTROL_MFR_ID = 1162
 
-# Core GATT Characteristics definitions matching your integration
 UUID_NAME = "2be32db1-5f6b-4cbd-8833-8d6dfb164900"
 UUID_HW = "2be32db1-5f6b-4cbd-8813-8d6dfb164900"
 UUID_SERIAL_SETPOINT = "2be32db1-5f6b-5bd8-8238-d6dfb1649000"
 UUID_DETAILS = "2be32db1-5f6b-4cbd-8843-8d6dfb164900"
-
-# Consumption Statistics Characteristic verified via raw trace analysis
 UUID_STAT_8863 = "2be32db1-5f6b-4cbd-8863-8d6dfb164900"
 
+# ANSI Terminal Styling Color Codes
+CLR_HEADER = "\033[95m"
+CLR_TARGET = "\033[92m"  # Green
+CLR_SKIP = "\033[90m"    # Grey
+CLR_INFO = "\033[94m"    # Blue
+CLR_WARN = "\033[93m"    # Yellow
+CLR_RESET = "\033[0m"
+
+# ==========================================
+# PORTABLE PARSING FUNCTIONS (Home Assistant Ready)
+# ==========================================
 
 def clean_bytes_to_string(raw_bytes: bytes) -> str:
     """Safely decodes raw hardware byte buffers into clean strings."""
@@ -51,8 +61,7 @@ def parse_name_from_mfr(mfr_bytes: bytes) -> str | None:
     if len(mfr_bytes) < 9:
         return None
     try:
-        name_bytes = mfr_bytes[8:]
-        return clean_bytes_to_string(name_bytes)
+        return clean_bytes_to_string(mfr_bytes[8:])
     except Exception:
         return None
 
@@ -77,7 +86,7 @@ def parse_thermostat_payload(
     fallback_name: str,
     raw_passive_flags: int = 0
 ) -> dict[str, Any]:
-    """Parses raw GATT binary arrays into a clean state dictionary matching integration requirements."""
+    """Parses raw GATT binary arrays into a clean state dictionary."""
     name = clean_bytes_to_string(raw_name) or fallback_name
     
     serial = None
@@ -95,7 +104,7 @@ def parse_thermostat_payload(
     air_temp = None
     floor_temp = None
     
-    # Heating relay state derived bitwise from the passive airwave flag register mask
+    # Heating relay state derived bitwise from the passive flag register mask
     is_heating = bool(raw_passive_flags & 0x80)
 
     if len(raw_details) >= 12:
@@ -112,7 +121,6 @@ def parse_thermostat_payload(
         if desired_raw is not None:
             desired_temp = round(desired_raw / 10.0, 1)
 
-    # Unpack long-term counter values out of 8863 block
     relay_cycles = unpack_uint32(raw_8863, 0) if len(raw_8863) >= 4 else None
     operating_hours = unpack_uint32(raw_8863, 4) if len(raw_8863) >= 8 else None
     heating_hours_raw = unpack_uint32(raw_8863, 8) if len(raw_8863) >= 12 else None
@@ -135,102 +143,136 @@ def parse_thermostat_payload(
     }
 
 
-async def read_device_active_data(device, passive_data: dict):
-    """🚀 STAGE 2: Connects and maps all discovered raw GATT structures side-by-side cleanly."""
-    print(f"\n🔗 Attempting Active GATT Connection to {device.address}...")
-    try:
-        async with BleakClient(device, timeout=10.0) as client:
-            print(f"   ✅ Connected! Extracting diagnostic logs...")
-            
-            raw_name = await client.read_gatt_char(UUID_NAME)
-            raw_hw = await client.read_gatt_char(UUID_HW)
-            raw_serial_block = await client.read_gatt_char(UUID_SERIAL_SETPOINT)
-            raw_details = await client.read_gatt_char(UUID_DETAILS)
-            
-            # Read consumption characteristics safely
-            raw_8863 = b""
-            try:
-                raw_8863 = await client.read_gatt_char(UUID_STAT_8863)
-            except Exception:
-                pass
-
-            print(f"\n   🔍 [RAW ACTIVE CHARACTERISTIC TRACE]")
-            print(f"      • UUID_DETAILS       ➔ Hex: {raw_details.hex()}")
-            if raw_8863:
-                print(f"      • UUID_STAT_8863     ➔ Hex: {raw_8863.hex()}")
-            
-            raw_flags_byte = passive_data.get("raw_flags_byte", 0)
-            parsed = parse_thermostat_payload(
-                raw_name, raw_hw, raw_serial_block, raw_details, raw_8863,
-                device.name or "ecoControl", raw_flags_byte
-            )
-
-            print("\n   📦 UNPACKED PARSING RESULTS:")
-            print(f"      • Hardware Reg Name  : '{parsed['name']}'")
-            print(f"      • Device Serial No   : {parsed['serial']}")
-            print(f"      • HW / SW Version    : {parsed['hw_version']} / v{parsed['software_version']}")
-            print(f"      • System Error Code  : {parsed['error_code'] if parsed['error_code'] != 0 else '-'}")
-            print(f"      • Operational Mode   : {parsed['operation_mode']}")
-            print(f"      • Room Air Temp      : {parsed['air_temp']}°C")
-            print(f"      • Reg Floor Temp     : {parsed['floor_temp']}°C")
-            print(f"      • Target Setpoint    : {parsed['desired_temp']}°C")
-            print(f"      • Relay (Heating)    : {parsed['is_heating']}")
-            
-            if parsed['relay_cycles'] is not None:
-                print(f"\n      📊 [HISTORICAL CONSUMPTION LOGS]:")
-                print(f"        ├── Relay Cycle Count : {parsed['relay_cycles']} clicks")
-                print(f"        ├── Operating Time    : {parsed['operating_hours']} hours")
-                print(f"        └── Total Heating Time: {parsed['heating_hours']} hours")
-            print("   " + "-" * 60)
-            
-    except Exception as e:
-        print(f"   ❌ [ACTIVE SESSION FAILED]: {e}")
-
+# ==========================================
+# SCANNER AND ANALYSIS CORE EXECUTION ENGINE
+# ==========================================
 
 async def main():
-    print("🔎 STAGE 1: Passive scanning for airwave advertisement packages (5 seconds)...")
-    devices_dict = await BleakScanner.discover(timeout=5.0, return_adv=True)
+    # ----------------------------------------------------
+    # PHASE 1: BROAD PASSIVE SCAN AND FILTER GRAPH
+    # ----------------------------------------------------
+    print(f"\n{CLR_HEADER}🔎 PHASE 1: Running Passive Environment Discovery Scan (5 Seconds)...{CLR_RESET}")
+    discovered_raw = await BleakScanner.discover(timeout=5.0, return_adv=True)
     
-    target_registry = []
-
-    print("\n📋 ================= RAW & DECODED PASSIVE ANALYSIS =================")
-    for address, (device, adv) in devices_dict.items():
-        name = device.name or adv.local_name or ""
+    selected_targets: Dict[str, Tuple[Any, Any]] = {}
+    
+    print(f"\n📡 Discovered Devices Inventory Breakdown:")
+    print("-" * 85)
+    for address, (device, adv) in discovered_raw.items():
+        name = device.name or adv.local_name or "Unknown Name"
         name_lower = name.lower()
         
-        is_target = any(k in name_lower for k in TARGET_KEYWORDS) or (ECOCONTROL_MFR_ID in adv.manufacturer_data)
-        if not is_target:
-            continue
-            
-        passive_metrics = {"name": None, "floor_temp": None, "raw_flags_byte": 0}
-        print(f"\n🎯 Discovered Node: '{name}' | MAC: {address} | RSSI: {adv.rssi}dBm")
+        # Check matching parameters against validation keys
+        is_matched = any(k in name_lower for k in TARGET_KEYWORDS) or (ECOCONTROL_MFR_ID in adv.manufacturer_data)
         
-        if adv.manufacturer_data and ECOCONTROL_MFR_ID in adv.manufacturer_data:
-            payload = adv.manufacturer_data[ECOCONTROL_MFR_ID]
-            
-            if len(payload) >= 3:
-                passive_metrics["raw_flags_byte"] = int(payload[2])
-                
-            passive_metrics["name"] = parse_name_from_mfr(payload)
-            passive_metrics["floor_temp"] = parse_floor_temp_from_mfr(payload)
-            
-            print("   • Decoded Passive Broadcast Telemetry:")
-            print(f"       ↳ Parsed Name       : {passive_metrics['name']}")
-            print(f"       ↳ Parsed Floor Temp : {passive_metrics['floor_temp']}°C")
-            print(f"       ↳ Raw Flag Register : {hex(passive_metrics['raw_flags_byte'])}")
-            
-        target_registry.append((device, passive_metrics))
+        if is_matched:
+            selected_targets[address] = (device, adv)
+            print(f"{CLR_TARGET}🎯 [SELECTED] '{name}' | MAC: {address} | RSSI: {adv.rssi}dBm | Manufacturer IDs: {list(adv.manufacturer_data.keys())}{CLR_RESET}")
+        else:
+            print(f"{CLR_SKIP}   [SKIPPED]  '{name}' | MAC: {address} | RSSI: {adv.rssi}dBm{CLR_RESET}")
+    print("-" * 85)
+    print(f"Total Discovered: {len(discovered_raw)} | {CLR_TARGET}Matching Targets Filtered: {len(selected_targets)}{CLR_RESET}")
 
-    print("=====================================================================")
-
-    if not target_registry:
-        print(f"\n⚠️ No thermostats matching keywords or MFR ID {ECOCONTROL_MFR_ID} detected in range.")
+    if not selected_targets:
+        print(f"\n{CLR_WARN}⚠️ Termination Abort: No valid ecoControl target thermostats located in radio spectrum bounds.{CLR_RESET}\n")
         return
 
-    print(f"\n🚀 STAGE 2: Found {len(target_registry)} device(s). Moving to active connections...")
-    for device, passive_data in target_registry:
-        await read_device_active_data(device, passive_data)
-    print("\n========================= DIAGNOSTIC COMPLETE =========================")
+    # ----------------------------------------------------
+    # PHASE 2: ISOLATED PASSIVE PAYLOAD UNPACK
+    # ----------------------------------------------------
+    print(f"\n{CLR_HEADER}📦 PHASE 2: Breaking Down Isolated Passive Over-the-Air Frames...{CLR_RESET}")
+    
+    for address, (device, adv) in selected_targets.items():
+        print(f"\n📰 Device passive payload breakdown: {CLR_TARGET}{device.name or 'Tael'}{CLR_RESET} [{address}]")
+        print("  " + "~"*60)
+        
+        if ECOCONTROL_MFR_ID in adv.manufacturer_data:
+            payload = adv.manufacturer_data[ECOCONTROL_MFR_ID]
+            
+            # Extract metrics using modular logic blocks
+            p_name = parse_name_from_mfr(payload) or "Unknown Format"
+            p_floor = parse_floor_temp_from_mfr(payload)
+            p_flag = payload[2] if len(payload) >= 3 else 0
+            is_heating_active = bool(p_flag & 0x80)
+            
+            print(f"  {CLR_INFO}► INTERPRETED PASSIVE DATA:{CLR_RESET}")
+            print(f"    ├── Broadcasted Identification Tag : {p_name}")
+            print(f"    ├── Extracted Floor Temperature    : {p_floor if p_floor is not None else '-'}°C")
+            print(f"    └── Inferred Heating Relay State   : {'🔥 Active (Heating)' if is_heating_active else '❄️ Idle (Balanced)'}")
+            print(f"  {CLR_INFO}► RAW DATA ARRAYS:{CLR_RESET}")
+            print(f"    ├── Payload Hex Length String      : {payload.hex()}")
+            print(f"    └── Decimal Int Representation     : {list(payload)}")
+        else:
+            print(f"  {CLR_WARN}⚠️ Structural Warning: Target parsed based on name, but lacks specific Manufacturer Data ID block definitions.{CLR_RESET}")
+        print("  " + "~"*60)
+
+    # ----------------------------------------------------
+    # PHASE 3: ACTIVE GATT CORRELATION PASS
+    # ----------------------------------------------------
+    print(f"\n{CLR_HEADER}🔗 PHASE 3: Connecting to Targets & Generating Comparative Analysis...{CLR_RESET}")
+    
+    for address, (device, adv) in selected_targets.items():
+        print(f"\n⚙️ Initializing dynamic socket pass to: {CLR_TARGET}{device.name or 'Tael'}{CLR_RESET} [{address}]")
+        print("  " + "="*70)
+        
+        payload = adv.manufacturer_data.get(ECOCONTROL_MFR_ID, b"")
+        p_name = parse_name_from_mfr(payload) or "N/A"
+        p_floor = parse_floor_temp_from_mfr(payload)
+        p_flag = payload[2] if len(payload) >= 3 else 0
+        p_heating = bool(p_flag & 0x80)
+        
+        try:
+            async with BleakClient(device, timeout=8.0) as client:
+                print(f"  ✅ Connected successfully! Reading active registers...")
+                
+                # Retrieve direct characteristic buffers
+                raw_name = await client.read_gatt_char(UUID_NAME)
+                raw_hw = await client.read_gatt_char(UUID_HW)
+                raw_serial = await client.read_gatt_char(UUID_SERIAL_SETPOINT)
+                raw_details = await client.read_gatt_char(UUID_DETAILS)
+                
+                raw_8863 = b""
+                try: 
+                    raw_8863 = await client.read_gatt_char(UUID_STAT_8863)
+                except Exception: 
+                    pass
+                
+                # Execute full state packaging parse rules using the modular helper
+                parsed = parse_thermostat_payload(raw_name, raw_hw, raw_serial, raw_details, raw_8863, "ecoControl", p_flag)
+                
+                print(f"\n  📊 {CLR_INFO}COMPLETE COMBINED PARSING STATE REPORT:{CLR_RESET}")
+                print(f"    ├── Hardware Registry String Name : '{parsed['name']}'")
+                print(f"    ├── Unpacked Production Serial No : {parsed['serial']}")
+                print(f"    ├── Unpacked Firmware Specification: {parsed['hw_version']} (Build v{parsed['software_version']})")
+                print(f"    ├── Current System Error Register : {parsed['error_code'] if parsed['error_code'] != 0 else '-'}")
+                print(f"    ├── Operation Mode Profile Code   : {parsed['operation_mode']}")
+                print(f"    ├── High-Res Room Air Temperature : {parsed['air_temp']}°C")
+                print(f"    ├── High-Res Room Floor Temp      : {parsed['floor_temp']}°C")
+                print(f"    ├── Live Hardware Target Setpoint : {parsed['desired_temp']}°C")
+                print(f"    ├── Active Relay Heating State    : {parsed['is_heating']}")
+                if parsed['relay_cycles'] is not None:
+                    print(f"    ├── Accumulated Operational Stats :")
+                    print(f"    │   ├── Total Swapping Cycles     : {parsed['relay_cycles']} clicks")
+                    print(f"    │   ├── Active Power-On Runtime   : {parsed['operating_hours']} Hours")
+                    print(f"    │   └── Total Physical Heat Time  : {parsed['heating_hours']} Hours")
+                
+                print(f"\n  🕵️‍♂️ {CLR_HEADER}ACTIVE VS PASSIVE INTEGRITY METRICS DIFFERENCE ANALYSIS:{CLR_RESET}")
+                
+                # Compute sync and variance thresholds cleanly
+                name_delta = "MATCHING (100% Sync)" if p_name == parsed['name'] or parsed['name'].startswith(p_name) else f"⚠️ MISMATCH DETECTED ('{p_name}' vs '{parsed['name']}')"
+                temp_delta = 0.0 if p_floor is None or parsed['floor_temp'] is None else round(abs(p_floor - parsed['floor_temp']), 1)
+                
+                print(f"    ├── Naming Metric Alignment Verification : {name_delta}")
+                print(f"    ├── Temperature Deviation Variance Float : {temp_delta}°C (Passive: {p_floor}°C | Active: {parsed['floor_temp']}°C)")
+                print(f"    └── Relay Signal Synchronization Matrix  : {'MATCHING (100% Sync)' if p_heating == parsed['is_heating'] else '⚠️ METRIC DELAY DRIFT PRESENT'}")
+                
+        except Exception as ex:
+            print(f"  ❌ {CLR_WARN}[CONNECTION ARTIFACT ERROR] Active GATT transaction failed: {ex}{CLR_RESET}")
+            print(f"     ↳ Range bounds dropped below threshold or hardware adapter slots occupied.")
+            print(f"     ↳ Fallback State: Rely on the Phase 2 isolated passive values stored above.")
+        print("  " + "="*70)
+
+    print(f"\n{CLR_HEADER}=========================== DIAGNOSTIC PIPELINE COMPLETE ==========================={CLR_RESET}\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
