@@ -230,7 +230,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     fallback_name, address, err
                 )
                 coordinator.update_interval = None
-                return coordinator.data if coordinator.data else initial_data
+                raise UpdateFailed(f"Initial GATT link timed out for ecoControl thermostat {fallback_name} [{address}]: {err}")
 
     # Read live user scan updates
     active_interval = entry.options.get(CONF_POLL_INTERVAL, entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
@@ -307,7 +307,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     # Try setting up data on startup. If active connection fails, it falls back gracefully
     if active_interval > 0:
-        await coordinator.async_config_entry_first_refresh()
+        await coordinator.async_refresh()
     else:
         # Check background cache for immediate startup metrics if active scanning is disabled
         last_adv = bluetooth.async_last_service_info(hass, address)
