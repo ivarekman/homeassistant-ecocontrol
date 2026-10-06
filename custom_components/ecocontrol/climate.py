@@ -1,4 +1,4 @@
-"""Climate platform for the read-only ecoControl floor heating integration."""
+"""Climate platform for the native zero-config ecoControl floor heating integration."""
 
 from typing import Any
 
@@ -9,7 +9,7 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -47,17 +47,16 @@ class EcoControlThermostat(
     """Representation of an ecoControl Floor Heating Thermostat device card."""
 
     _attr_has_entity_name = True
-    _attr_name = None  # None ensures it takes the device name natively in the UI
+    _attr_name = None
     
-    # Core temperature scale declarations
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_target_temperature_step = 0.5
+    _attr_min_temp = 5.0
+    _attr_max_temp = 35.0
     
-    # Force Read-Only State: Clear ClimateEntityFeature flags entirely to lock sliders
     _attr_supported_features = ClimateEntityFeature(0)
-    
-    # Declare static mode maps to lock operational workflows to heating
     _attr_hvac_modes = [HVACMode.HEAT]
+    _attr_hvac_mode = HVACMode.HEAT
 
     def __init__(
         self,
@@ -98,7 +97,6 @@ class EcoControlThermostat(
         if not self.coordinator.data:
             return HVACAction.OFF
             
-        # Inspect our live boolean relay metric to toggle the dashboard background theme
         if self.coordinator.data.get("is_heating"):
             return HVACAction.HEATING
             
@@ -106,20 +104,37 @@ class EcoControlThermostat(
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Expose auxiliary non-standard high-res metrics safely."""
+        """Dynamically set custom state attributes for frontend dashboard cards."""
         attributes = {}
+        
         if self.coordinator.data:
-            if air_temp := self.coordinator.data.get("air_temp"):
-                attributes["room_air_temperature"] = air_temp
-            if error_code := self.coordinator.data.get("error_code"):
-                attributes["system_error_code"] = error_code
-            if mode_code := self.coordinator.data.get("operation_mode"):
+            air_temp = self.coordinator.data.get("air_temp")
+            floor_temp = self.coordinator.data.get("floor_temp")
+            mode_code = self.coordinator.data.get("operation_mode")
+            error_code = self.coordinator.data.get("error_code")
+
+            if air_temp is not None:
+                attributes["room_air_temperature"] = float(air_temp)
+                
+            if floor_temp is not None:
+                attributes["floor_probe_temperature"] = float(floor_temp)
+                
+            if mode_code is not None:
                 attributes["operational_mode_code"] = mode_code
+
+            air_display = f"{air_temp}°C" if air_temp is not None else "Unavailable"
+            floor_display = f"{floor_temp}°C" if floor_temp is not None else "-"
+            
+            attributes["ambient_summary"] = f"Floor: {floor_display}  |  Air: {air_display}"
+
+            if error_code and error_code != "-":
+                attributes["hardware_fault_warning"] = f"⚠️ Code {error_code}"
+
         return attributes
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Bind the entity to the central ecoControl device container."""
+        """Bind entity to device container."""
         if self.coordinator.data:
             name = self.coordinator.data.get("name", self.fallback_name)
             hardware_version = self.coordinator.data.get("hw_version")
