@@ -3,6 +3,7 @@
   "name": "ecoControl Floor Heating",
   "description": "Lightweight, read-only integration for Taelek Oy ecoControl Bluetooth floor heating thermostats.",
   "codeowners": ["@ivarekman"],
+  "supported_by": "ecocontrol",
   "dependencies": [
     "bluetooth",
     "bluetooth_adapters"
@@ -24,5 +25,5 @@
       "connectable": false
     }
   ],
-  "version": "2.0.1"
+  "version": "2.1.0"
 }

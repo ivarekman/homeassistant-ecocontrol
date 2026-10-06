@@ -16,7 +16,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 # Global configuration handles imported by config_flow.py
 DOMAIN = "ecocontrol"
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "climate"]
 _LOGGER = logging.getLogger(__name__)
 
 # Core GATT Characteristics
