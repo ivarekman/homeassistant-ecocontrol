@@ -6,7 +6,7 @@
       "already_configured": "This device is already configured."
     },
     "error": {
-      "no_devices_found_retry": "No ecoControl devices discovered yet. Ensure your device is nearby and powered on. Click 'Submit' below to run a fresh 3-second hardware scan."
+      "no_devices_found_retry": "No ecoControl devices discovered yet. Ensure your device is nearby and powered on. Click 'Submit' below to run a fresh hardware scan."
     },
     "step": {
       "user": {
