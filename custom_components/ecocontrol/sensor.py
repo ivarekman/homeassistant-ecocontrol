@@ -19,7 +19,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from . import DOMAIN
 
-# 🚀 EXTENDED DEFINITIONS: Keeps your precise list pattern but maps all parameters
+
 SENSOR_DEFINITIONS = [
     {
         "name": "Air temperature",
@@ -44,14 +44,6 @@ SENSOR_DEFINITIONS = [
         "state_class": SensorStateClass.MEASUREMENT,
         "unit": UnitOfTemperature.CELSIUS,
         "icon": None,
-    },
-    {
-        "name": "Heating status",
-        "key": "is_heating",
-        "device_class": None,
-        "state_class": None,
-        "unit": None,
-        "icon": "mdi:fire",
     },
     {
         "name": "Error code",
@@ -125,7 +117,8 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up ecoControl sensors from a config entry data block handle."""
+    """Set up ecoControl sensors from a config entry."""
+
     coordinator = hass.data[DOMAIN][entry.entry_id]
     address = entry.data["address"]
     fallback_name = entry.data["default_name"]
@@ -152,7 +145,7 @@ class EcoControlSensor(
     CoordinatorEntity[DataUpdateCoordinator[dict[str, Any]]],
     SensorEntity,
 ):
-    """Representation of one read-only ecoControl sensor parameter state."""
+    """Representation of one read-only ecoControl sensor."""
 
     _attr_has_entity_name = True
 
@@ -168,12 +161,14 @@ class EcoControlSensor(
         unit: str | None = None,
         icon: str | None = None,
     ) -> None:
-        """Initialize an ecoControl sensor interface."""
+        """Initialize an ecoControl sensor."""
+
         super().__init__(coordinator)
 
         self._key = key
         self.address = address
         self.fallback_name = fallback_name
+
         self._attr_name = name
         self._attr_device_class = device_class
         self._attr_state_class = state_class
@@ -185,41 +180,36 @@ class EcoControlSensor(
 
     @property
     def native_value(self) -> Any:
-        """Return the state value computed out of our memory update coordinator."""
+        """Return the current sensor value."""
+
         if self.coordinator.data is None:
             return None
-        
-        val = self.coordinator.data.get(self._key)
-        
-        # Friendly representation for error code handling
-        if self._key == "error_code" and (val == 0 or val is None):
-            return "-"
             
-        # Friendly string representation for the heating bitmask state variable
-        if self._key == "is_heating":
-            return "Heating" if val else "Idle"
-            
-        return val
+        return self.coordinator.data.get(self._key)
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Binds all sensor entities into one unified primary device card pane."""
-        mac_clean = self.address.replace(":", "").lower()
-        name = self.coordinator.data.get("name", self.fallback_name) if self.coordinator.data else self.fallback_name
-        
-        sw_version = None
+        """Bind the entity to the ecoControl thermostat device."""
+
         if self.coordinator.data:
-            hw = self.coordinator.data.get("hw_version")
-            sw = self.coordinator.data.get("software_version")
-            if hw and sw:
-                sw_version = f"{hw} v{sw}"
-            elif hw:
-                sw_version = hw
+            name = self.coordinator.data.get(
+                "name",
+                self.fallback_name,
+            )
+            hardware_version = self.coordinator.data.get("hw_version")
+            software_version = self.coordinator.data.get("software_version")
+        else:
+            name = self.fallback_name
+            hardware_version = None
+            software_version = None
 
         return DeviceInfo(
-            identifiers={(DOMAIN, f"ecocontrol_{mac_clean}")},
+            identifiers={(DOMAIN, self.address)}, 
             name=name,
             manufacturer="Taelek Oy",
             model="ecoControl Thermostat",
-            sw_version=sw_version,
+            serial_number=self.coordinator.data.get("serial")
+                if self.coordinator.data else None,
+            hw_version=hardware_version,
+            sw_version=software_version,
         )

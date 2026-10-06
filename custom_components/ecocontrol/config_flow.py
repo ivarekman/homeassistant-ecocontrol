@@ -12,8 +12,8 @@ from homeassistant.data_entry_flow import FlowResult
 
 from . import (
     DOMAIN, 
-    DEFAULT_ACTIVE_SCAN_INTERVAL, 
-    CONF_ACTIVE_SCAN_INTERVAL,
+    DEFAULT_POLL_INTERVAL, 
+    CONF_POLL_INTERVAL,
     parse_name_from_mfr,
     parse_floor_temp_from_mfr
 )
@@ -48,7 +48,6 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if address == "REFRESH_TRIGGER" or not address:
                 self._discovered_device = None
-                await asyncio.sleep(3.0)
                 return await self.async_step_user(user_input=None)
 
             if address in self._discovered_devices:
@@ -63,7 +62,7 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data={
                         "address": address, 
                         "default_name": clean_name,
-                        CONF_ACTIVE_SCAN_INTERVAL: DEFAULT_ACTIVE_SCAN_INTERVAL,
+                        CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
                     }
                 )
 
@@ -165,15 +164,15 @@ class EcoControlOptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         current_active = self.config_entry.options.get(
-            CONF_ACTIVE_SCAN_INTERVAL, 
-            self.config_entry.data.get(CONF_ACTIVE_SCAN_INTERVAL, DEFAULT_ACTIVE_SCAN_INTERVAL)
+            CONF_POLL_INTERVAL, 
+            self.config_entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
         )
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
                 vol.Required(
-                    CONF_ACTIVE_SCAN_INTERVAL, 
+                    CONF_POLL_INTERVAL, 
                     default=int(current_active)
                 ): vol.All(vol.Coerce(int), vol.Range(min=0)),
             }),
