@@ -75,7 +75,7 @@ If valid, click Restart to reboot Home Assistant.
 2. If your device is not automatically discovered click **+ Add Integration** in the bottom right.
 3. Search for **ecoControl Floor Heating**.
 4. The setup discovery wizard window will list your physical thermostats cleanly by their customized localized given names (e.g., `17876 [MAC]`). Select your device and click Submit.
-5. Remember to set the scanning interval using the Configure-button. Default poll interval is 600s (10min).
+5. Remember to set the scanning interval using the Configure-button. Default poll interval is 600s (10min). To disable active GATT connections completely set the polling interval to 0.
 
 ## ESPHome Bluetooth Proxy 
 By default an ESP32 ESPHome Bluetooth Proxy may only perform passive scanning. To read all ecoControl ecoControl values a GATT connection is needed. To make this work, enable active mode your ESPHome configuration.
