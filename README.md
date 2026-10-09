@@ -3,11 +3,10 @@ A lightweight, read-only Home Assistant custom integration for **Taelek Oy ecoCo
 
 ## Features
 
-- **Pure Read-Only Architecture:** Completely safe to run; contains no control write loops that strain thermostat battery or flash memory.
+- **Pure Read-Only Architecture:**
 - **Hybrid Data Gathering:** 
-  - Passive discovery scanning extracts custom given device names dynamically from over-the-air manufacturer advertisement payloads.
-  - Active Active GATT connection sync securely polls high-resolution parameters directly without linear guessing baselines.
-- **Modern Home Assistant Standard:** Implements `_attr_has_entity_name` to prevent redundant entity naming strings (e.g., yields `Air temperature` instead of `ecoControl ecoControl Air temperature`).
+  - Passive discovery scanning extracts custom given device names and floor temperature from over-the-air manufacturer advertisement payloads.
+  - Active GATT connection sync polls additional details.
 - **HACS Ready:** Ready to be added as a custom repository immediately.
 
 ---
@@ -43,7 +42,7 @@ When Home Assistant runs its 10-minute coordination interval loop, it securely c
 
 The integration exposes the following read-only sensor entities into your unified device panels:
 * **Air temperature** (°C)
-* **Floor temperature** (°C)
+* **Floor temperature** (°C) (passive)
 * **Desired temperature** (°C)
 * **Error code**
 * **Hardware version**
@@ -64,7 +63,7 @@ The integration exposes the following read-only sensor entities into your unifie
 
 ## Manual installation
 
-1. Copy files to Home Assistant custom_components within a new folder ecocontrol
+1. Copy files to Home Assistant into a new folder custom_components/ecocontrol/
 2. Settings -> Tools -> YAML -> Check Configuration.
 3. Settings -> Tools -> YAML -> Restart -> Restart Home Assistant
 
@@ -73,6 +72,10 @@ If valid, click Restart to reboot Home Assistant.
 ## Configuration
 
 1. In Home Assistant, navigate to **Settings** -> **Devices & Services**.
-2. Click **+ Add Integration** in the bottom right.
+2. If your device is not automatically discovered click **+ Add Integration** in the bottom right.
 3. Search for **ecoControl Floor Heating**.
-4. The setup discovery wizard window will list your physical thermostats cleanly by their customized localized given names (e.g., `17876 [MAC]`). Select your device and click submit.
+4. The setup discovery wizard window will list your physical thermostats cleanly by their customized localized given names (e.g., `17876 [MAC]`). Select your device and click Submit.
+5. Remember to set the scanning interval using the Configure-button. Default poll interval is 600s (10min).
+
+## ESPHome Bluetooth Proxy 
+By default an ESP32 ESPHome Bluetooth Proxy may only perform passive scanning. To read all ecoControl ecoControl values a GATT connection is needed. To make this work, enable active mode your ESPHome configuration.
