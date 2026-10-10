@@ -1,9 +1,11 @@
 """Climate platform for the native zero-config ecoControl floor heating integration."""
 
+from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.climate import (
     ClimateEntity,
+    ClimateEntityDescription,
     ClimateEntityFeature,
     HVACAction,
     HVACMode,
@@ -21,6 +23,27 @@ from homeassistant.helpers.update_coordinator import (
 from . import DOMAIN
 
 
+@dataclass(frozen=True, kw_only=True)
+class EcoControlClimateEntityDescription(ClimateEntityDescription):
+    """Custom description class for mapping our static tracking limits."""
+
+    min_temp: float
+    max_temp: float
+    target_temp_step: float
+    temperature_unit: UnitOfTemperature
+
+
+THERMOSTAT_DESCRIPTION = EcoControlClimateEntityDescription(
+    key="thermostat",
+    name=None,
+    icon="mdi:thermometer",
+    temperature_unit=UnitOfTemperature.CELSIUS, 
+    min_temp=5.0,
+    max_temp=35.0,
+    target_temp_step=0.5,
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -36,6 +59,7 @@ async def async_setup_entry(
             coordinator=coordinator,
             address=address,
             fallback_name=fallback_name,
+            description=THERMOSTAT_DESCRIPTION,
         )
     ])
 
@@ -46,28 +70,30 @@ class EcoControlThermostat(
 ):
     """Representation of an ecoControl Floor Heating Thermostat device card."""
 
+    entity_description: EcoControlClimateEntityDescription
     _attr_has_entity_name = True
-    _attr_name = None
-    
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_target_temperature_step = 0.5
-    _attr_min_temp = 5.0
-    _attr_max_temp = 35.0
     
     _attr_supported_features = ClimateEntityFeature(0)
     _attr_hvac_modes = [HVACMode.HEAT]
-    _attr_hvac_mode = HVACMode.HEAT
 
     def __init__(
         self,
         coordinator: DataUpdateCoordinator[dict[str, Any]],
         address: str,
         fallback_name: str,
+        description: EcoControlClimateEntityDescription,
     ) -> None:
         """Initialize the thermostat container entity."""
         super().__init__(coordinator)
+        self.entity_description = description
         self.address = address
         self.fallback_name = fallback_name
+        
+        self._attr_temperature_unit = description.temperature_unit
+        self._attr_target_temperature_step = description.target_temp_step
+        self._attr_min_temp = description.min_temp
+        self._attr_max_temp = description.max_temp
+
         
         mac_clean = address.replace(":", "").lower()
         self._attr_unique_id = f"ecocontrol_{mac_clean}_thermostat"

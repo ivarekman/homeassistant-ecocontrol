@@ -192,7 +192,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Guard condition: Explicitly disable active scanning routine if configuration is set to 0
         if active_interval == 0:
             _LOGGER.debug("Active polling is disabled (0). Relying entirely on passive updates for %s", address)
-            return coordinator.data if coordinator.data else initial_data
+            return coordinator.data if (coordinator.data and coordinator.data.get("floor_temp") is not None) else initial_data
 
         service_info = bluetooth.async_last_service_info(hass, address)
         if not service_info or not service_info.device:
@@ -319,7 +319,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Updating ecoControl active interval loop to: %s seconds", new_active)
         
         coordinator.update_interval = timedelta(seconds=new_active) if new_active > 0 else None
-        await coordinator.async_request_refresh()
+        await coordinator.async_refresh()
 
     entry.async_on_unload(entry.add_update_listener(update_listener))
     
@@ -331,7 +331,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         last_adv = bluetooth.async_last_service_info(hass, address)
         if last_adv and last_adv.advertisement and ECOCONTROL_MFR_ID in last_adv.advertisement.manufacturer_data:
             _async_handle_bluetooth_advertisement(last_adv, bluetooth.BluetoothChange.ADVERTISEMENT)
-            
+        else:
+            coordinator.async_set_updated_data(initial_data)
+        
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
