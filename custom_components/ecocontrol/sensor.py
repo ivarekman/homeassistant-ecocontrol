@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -52,6 +52,7 @@ SENSOR_DEFINITIONS = [
         "state_class": None,
         "unit": None,
         "icon": "mdi:alert-circle-outline",
+        "category": EntityCategory.DIAGNOSTIC,
     },
     {
         "name": "Operational mode",
@@ -60,30 +61,7 @@ SENSOR_DEFINITIONS = [
         "state_class": None,
         "unit": None,
         "icon": "mdi:calendar-clock",
-    },
-    {
-        "name": "Hardware version",
-        "key": "hw_version",
-        "device_class": None,
-        "state_class": None,
-        "unit": None,
-        "icon": "mdi:chip",
-    },
-    {
-        "name": "Software version",
-        "key": "software_version",
-        "device_class": None,
-        "state_class": None,
-        "unit": None,
-        "icon": "mdi:xml",
-    },
-    {
-        "name": "Serial number",
-        "key": "serial",
-        "device_class": None,
-        "state_class": None,
-        "unit": None,
-        "icon": "mdi:numeric",
+        "category": EntityCategory.DIAGNOSTIC,
     },
     {
         "name": "Relay cycle count",
@@ -92,6 +70,7 @@ SENSOR_DEFINITIONS = [
         "state_class": SensorStateClass.TOTAL_INCREASING,
         "unit": "clicks",
         "icon": "mdi:toggle-switch",
+        "category": EntityCategory.DIAGNOSTIC,
     },
     {
         "name": "Total operating time",
@@ -100,6 +79,7 @@ SENSOR_DEFINITIONS = [
         "state_class": SensorStateClass.TOTAL_INCREASING,
         "unit": UnitOfTime.HOURS,
         "icon": "mdi:clock-outline",
+        "category": EntityCategory.DIAGNOSTIC,
     },
     {
         "name": "Accumulated heating duration",
@@ -108,6 +88,7 @@ SENSOR_DEFINITIONS = [
         "state_class": SensorStateClass.TOTAL_INCREASING,
         "unit": UnitOfTime.HOURS,
         "icon": "mdi:chart-timeline-variant",
+        "category": EntityCategory.DIAGNOSTIC,
     },
 ]
 
@@ -134,6 +115,7 @@ async def async_setup_entry(
             state_class=definition["state_class"],
             unit=definition["unit"],
             icon=definition["icon"],
+            category=definition.get("category", None),
         )
         for definition in SENSOR_DEFINITIONS
     ]
@@ -160,6 +142,7 @@ class EcoControlSensor(
         state_class: SensorStateClass | None = None,
         unit: str | None = None,
         icon: str | None = None,
+        category: EntityCategory | None = None,
     ) -> None:
         """Initialize an ecoControl sensor."""
 
@@ -174,6 +157,7 @@ class EcoControlSensor(
         self._attr_state_class = state_class
         self._attr_native_unit_of_measurement = unit
         self._attr_icon = icon
+        self._attr_entity_category = category
 
         mac_clean = address.replace(":", "").lower()
         self._attr_unique_id = f"ecocontrol_{mac_clean}_{key}"
@@ -198,18 +182,19 @@ class EcoControlSensor(
             )
             hardware_version = self.coordinator.data.get("hw_version")
             software_version = self.coordinator.data.get("software_version")
+            serial_number = self.coordinator.data.get("serial")
         else:
             name = self.fallback_name
             hardware_version = None
             software_version = None
+            serial_number = None
 
         return DeviceInfo(
             identifiers={(DOMAIN, self.address)}, 
             name=name,
             manufacturer="Taelek Oy",
             model="ecoControl Thermostat",
-            serial_number=self.coordinator.data.get("serial")
-                if self.coordinator.data else None,
+            serial_number=serial_number,
             hw_version=hardware_version,
             sw_version=software_version,
         )
