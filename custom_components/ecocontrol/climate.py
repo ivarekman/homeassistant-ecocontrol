@@ -20,7 +20,7 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
 )
 
-from . import DOMAIN
+from . import DOMAIN, _LOGGER, ThermostatState
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -75,6 +75,10 @@ class EcoControlThermostat(
     
     _attr_supported_features = ClimateEntityFeature(0)
     _attr_hvac_modes = [HVACMode.HEAT]
+    
+    async def async_set_temperature(self, **kwargs: Any) -> None:
+        """Reject background automation temperature changes gracefully."""
+        _LOGGER.warning("Cannot set temperature: Thermostat %s is a read-only BLE integration.", self.name)
 
     def __init__(
         self,
@@ -155,6 +159,18 @@ class EcoControlThermostat(
 
             if error_code and error_code != "-":
                 attributes["hardware_fault_warning"] = f"⚠️ Code {error_code}"
+            
+        state_flag = getattr(self.coordinator, "thermostat_state", ThermostatState.GATT_DISABLED_BY_USER)
+        if state_flag == ThermostatState.OK:
+            attributes["connection_mode"] = "Active (includes GATT polling)"
+        elif state_flag == ThermostatState.INITIAL_SETUP:
+            attributes["connection_mode"] = "Active connection initializing..."
+        elif state_flag == ThermostatState.STARTUP_GATT_FAILED:
+            attributes["connection_mode"] = "Passive, GATT polling failed on setup"
+        elif state_flag == ThermostatState.RUNTIME_FAILED:
+            attributes["connection_mode"] = "Passive, GATT polling failed temporarily (waiting for packet to reactivate)"
+        else:
+            attributes["connection_mode"] = "Passive, GATT polling disabled by user"
 
         return attributes
 

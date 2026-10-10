@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import timedelta
+from enum import StrEnum
 import logging
 import struct
 from typing import Any
@@ -12,6 +13,7 @@ from bleak_retry_connector import establish_connection
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.components import bluetooth
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 # Global configuration handles imported by config_flow.py
@@ -31,7 +33,14 @@ DEFAULT_POLL_INTERVAL = 600   # 10 minutes
 
 ECOCONTROL_MFR_ID = 1162
 
-
+class ThermostatState(StrEnum):
+    """Lifecycle and connection states for the ecoControl thermostat."""
+    INITIAL_SETUP = "initial_setup"
+    OK = "ok"
+    STARTUP_GATT_FAILED = "startup_gatt_failed"
+    RUNTIME_FAILED = "runtime_failed"
+    GATT_DISABLED_BY_USER = "gatt_disabled_by_user"
+    
 def clean_bytes_to_string(raw_bytes: bytes) -> str:
     """Safely decodes raw hardware byte buffers into clean strings."""
     try:
@@ -161,12 +170,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up ecoControl from a config entry created via UI."""
     hass.data.setdefault(DOMAIN, {})
     
-    if "connection_lock" not in hass.data[DOMAIN]:
-        hass.data[DOMAIN]["connection_lock"] = asyncio.Lock()
-        
-    connection_lock = hass.data[DOMAIN]["connection_lock"]
     address = entry.data["address"]
     fallback_name = entry.data["default_name"]
+
+    # Verify device presence on startup
+    service_info = bluetooth.async_last_service_info(hass, address)
+    if not service_info:
+        _LOGGER.debug("Thermostat %s [%s] not found in BLE cache. Delaying setup.", fallback_name, address)
+        raise ConfigEntryNotReady(f"Thermostat {address} has not been seen by Bluetooth adapters yet.")
 
     # Initialize full fallback dictionary tracking state data
     initial_data = {
@@ -186,13 +197,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     async def _async_update_data() -> dict[str, Any]:
-        """Fetch the latest high-resolution metrics from active GATT registers."""
-       
-        # Dynamically fetch the interval directly from the live coordinator configuration
-        if coordinator.update_interval is None:
-            _LOGGER.debug("Active polling is disabled (0). Relying entirely on passive updates for %s", address)
+        """Fetch the data over GATT connection."""
+
+        if coordinator.update_interval is None or coordinator.thermostat_state in (ThermostatState.GATT_DISABLED_BY_USER, ThermostatState.STARTUP_GATT_FAILED, ThermostatState.RUNTIME_FAILED):
+            _LOGGER.debug("Active polling loop suspended or sleeping (State: %s). Relying on passive scan metrics for %s", coordinator.thermostat_state, address)
             return coordinator.data if coordinator.data else initial_data
-        
+              
         service_info = bluetooth.async_last_service_info(hass, address)
         if not service_info or not service_info.device:
             if coordinator.data:
@@ -209,56 +219,76 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             mfr_data = current_adv.advertisement.manufacturer_data[ECOCONTROL_MFR_ID]
             p_flag = mfr_data[2] if mfr_data and len(mfr_data) >= 3 else 0
 
-        async with connection_lock:
-            try:
-                async with await establish_connection(
-                    client_class=BleakClient,
-                    device=ble_device,
-                    name=fallback_name,
-                    use_services_cache=True,
-                    max_attempts=2
-                ) as client:
-                    raw_name = await client.read_gatt_char(UUID_NAME)
-                    raw_hw = await client.read_gatt_char(UUID_HW)
-                    raw_serial_block = await client.read_gatt_char(UUID_SERIAL_SETPOINT)
-                    raw_details = await client.read_gatt_char(UUID_DETAILS)
-                    
-                    raw_8863 = b""
-                    try:
-                        raw_8863 = await client.read_gatt_char(UUID_STAT_8863)
-                    except Exception as stat_err:
-                        _LOGGER.debug("Statistics handle 8863 not available or failed: %s", stat_err)
-
-                    return parse_thermostat_payload(
-                        raw_name, raw_hw, raw_serial_block, raw_details, raw_8863, fallback_name, p_flag
-                    )
-                    
-            except Exception as err:
-                if coordinator.data and coordinator.data.get("hw_version") is not None:
-                    _LOGGER.warning(
-                        "Thermostat %s [%s] active connection failed, utilizing passive cached states. Error: %s", 
-                        fallback_name, address, err
-                    )
-                    return coordinator.data
+        try:
+            async with await establish_connection(
+                client_class=BleakClient,
+                device=ble_device,
+                name=fallback_name,
+                use_services_cache=True,
+                max_attempts=2
+            ) as client:
+                raw_name = await client.read_gatt_char(UUID_NAME)
+                raw_hw = await client.read_gatt_char(UUID_HW)
+                raw_serial_block = await client.read_gatt_char(UUID_SERIAL_SETPOINT)
+                raw_details = await client.read_gatt_char(UUID_DETAILS)
                 
-                # Device is unreachable/new: fallback gracefully to passive setup
-                _LOGGER.warning(
-                    "Initial active connection failed for thermostat %s [%s] (%s). Shifting integration to pure passive background scanning mode.", 
+                raw_8863 = b""
+                try:
+                    raw_8863 = await client.read_gatt_char(UUID_STAT_8863)
+                except Exception as stat_err:
+                    _LOGGER.debug("Statistics handle 8863 not available or failed: %s", stat_err)
+
+                parsed = parse_thermostat_payload(
+                    raw_name, raw_hw, raw_serial_block, raw_details, raw_8863, fallback_name, p_flag
+                )
+                coordinator.thermostat_state = ThermostatState.OK
+                return parsed
+                    
+        except Exception as err:
+            if coordinator.thermostat_state == ThermostatState.INITIAL_SETUP:
+                coordinator.thermostat_state = ThermostatState.STARTUP_GATT_FAILED
+                coordinator.update_interval = None
+                _LOGGER.info(
+                    "Initial active connection failed for thermostat %s [%s] (%s). "
+                    "Shifting integration permanently to pure passive background scanning mode.", 
                     fallback_name, address, err
                 )
-                coordinator.update_interval = None
                 return coordinator.data if coordinator.data else initial_data
+                
+            # Runtime connection fallback: Disable GATT tries until an advertisement packet arrives
+            _LOGGER.info(
+                "Thermostat %s [%s] connection dropped. Suspending active polling loop until next advertisement.", 
+                fallback_name, address
+            )
+            coordinator.thermostat_state = ThermostatState.RUNTIME_FAILED
+            coordinator.update_interval = None
+            return coordinator.data if coordinator.data else initial_data
 
     # Read live user scan updates
-    active_interval = entry.options.get(CONF_POLL_INTERVAL, entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
+    poll_interval = entry.options.get(CONF_POLL_INTERVAL, entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
 
+    # Check if Home Assistant has ANY adapter or proxy capable of making active connections to this device
+    if poll_interval > 0 and service_info and not service_info.connectable:
+        _LOGGER.info(
+            "Thermostat %s [%s] is only reachable via passive-only proxies or adapters. "
+            "Forcing pure passive background scanning mode to prevent connection retries.",
+            fallback_name, address
+        )
+        poll_interval = 0
+        
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
         name=f"ecocontrol_{address}",
-        update_interval=timedelta(seconds=active_interval) if active_interval > 0 else None,
+        update_interval=timedelta(seconds=poll_interval) if poll_interval > 0 else None,
         update_method=_async_update_data,
     )
+    # Custom attribute directly to the coordinator to track permanent active-failure status
+    if poll_interval > 0:
+        coordinator.thermostat_state = ThermostatState.INITIAL_SETUP
+    else:
+        coordinator.thermostat_state = ThermostatState.GATT_DISABLED_BY_USER
+    
     coordinator.async_set_updated_data(initial_data)
     entry.async_on_unload(entry.add_update_listener(update_listener))
     
@@ -288,20 +318,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         updated_data["is_heating"] = is_heating
 
         coordinator.async_set_updated_data(updated_data)
-        
+           
+        if coordinator.thermostat_state == ThermostatState.INITIAL_SETUP:
+            #Prevent race conditions on startup
+            return
+
         configured_interval = int(entry.options.get(
             CONF_POLL_INTERVAL, 
             entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
         ))
-        # If the polling loop is sleeping, a fresh advertisement proves the device is awake.
-        # Restore the active schedule loop instantly.
-        if coordinator.update_interval is None and configured_interval > 0:
-            _LOGGER.warning(
-                "Device %s detected via advertisement broadcast. Automatically restoring active GATT polling loop to %s seconds.", 
-                address, 
-                configured_interval
-            )
+
+        # If a connection previously failed AND the user has not disabled active polling (interval > 0),
+        # an advertisement packet proves the device is awake. Clear the flag and resume GATT loops.
+        if configured_interval > 0 and coordinator.thermostat_state in (ThermostatState.STARTUP_GATT_FAILED, ThermostatState.RUNTIME_FAILED):
+            _LOGGER.info("Device %s spotted online via broadcast. Testing active GATT link recovery...", address)
             coordinator.update_interval = timedelta(seconds=configured_interval)
+            
+            # Fire a background execution pass. If it succeeds, the update logic sets the state to OK.
+            # If it fails, the exception block cleanly wipes the interval again and preserves the failure state.
+            coordinator.thermostat_state = ThermostatState.INITIAL_SETUP
             coordinator.hass.async_create_task(coordinator.async_refresh())
 
     # Register passive advertisement listener filter matched specifically to this device's MAC address
@@ -317,14 +352,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     
+    async def _async_startup_poll() -> None:
+        """Execute the initial integration configuration connection check."""
+        try:
+            await coordinator.async_refresh()
+            # Transition to OK only if the active GATT fetch completed with zero exceptions
+            if coordinator.thermostat_state == ThermostatState.INITIAL_SETUP:
+                coordinator.thermostat_state = ThermostatState.OK
+        except Exception:
+            # Exceptions are already safely handled inside _async_update_data
+            pass
+            
     # Try setting up data on startup. If active connection fails, it falls back gracefully
-    if active_interval > 0:
+    if poll_interval > 0:
         entry.async_create_background_task(
             hass, 
-            coordinator.async_refresh(), 
+            _async_startup_poll(), 
             "ecocontrol-initial-active-poll"
         )
     else:
+        coordinator.thermostat_state = ThermostatState.GATT_DISABLED_BY_USER
         # Check background cache for immediate startup metrics if active scanning is disabled
         last_adv = bluetooth.async_last_service_info(hass, address)
         if last_adv and last_adv.advertisement and ECOCONTROL_MFR_ID in last_adv.advertisement.manufacturer_data:
@@ -335,9 +382,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle updates made inside the dynamic settings integrations Options Flow UI."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Handle live user parameter modifications inside the Options Flow UI on-the-fly."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    poll_interval = entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
 
+    # Allow a manual user update via the UI to reset and re-evaluate active connection health
+    if poll_interval > 0:
+        coordinator.thermostat_state = ThermostatState.INITIAL_SETUP
+        coordinator.update_interval = timedelta(seconds=poll_interval)
+        _LOGGER.info("Resetting polling schedule loop to %s seconds for %s", poll_interval, entry.title)
+    else:
+        coordinator.thermostat_state = ThermostatState.GATT_DISABLED_BY_USER
+        coordinator.update_interval = None
+        _LOGGER.info("Active cyclical GATT polling disabled for %s", entry.title)
+
+    await coordinator.async_refresh()
+    
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry cleanly."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
