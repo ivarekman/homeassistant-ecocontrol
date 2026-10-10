@@ -39,9 +39,17 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the device selection step with dynamic scanning feedback."""
         errors: dict[str, str] = {}
 
-        if bluetooth.async_scanner_count(self.hass) == 0:
-            _LOGGER.warning("[ecoControl] Setup blocked: No active Bluetooth scanners found on host")
-            return self.async_abort(reason="bluetooth_not_available")
+        # Check for active GATT connection capabilities
+        if bluetooth.async_scanner_count(self.hass, connectable=True) == 0:
+            # Fall back to checking for any active listener (including passive-only ESP32 proxies)
+            if bluetooth.async_scanner_count(self.hass, connectable=False) == 0:
+                _LOGGER.warning("[ecoControl] Setup blocked: No Bluetooth adapters or remote proxies found")
+                return self.async_abort(reason="bluetooth_not_available")
+            
+            _LOGGER.warning(
+                "[ecoControl] Running in passive proxy fallback mode: Found remote listening "
+                "nodes, but no connectable local hardware adapters are available on the host"
+            )              
 
         if user_input is not None:
             address = user_input.get("device")
@@ -62,7 +70,8 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data={
                         "address": address, 
                         "default_name": clean_name,
-                        CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
+                        # Disable scanning if we cannot take GATT connections
+                        CONF_POLL_INTERVAL: 0 if bluetooth.async_scanner_count(self.hass, connectable=True) == 0 else DEFAULT_POLL_INTERVAL, 
                     }
                 )
 

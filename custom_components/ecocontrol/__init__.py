@@ -80,6 +80,12 @@ def parse_floor_temp_from_mfr(mfr_bytes: bytes) -> float | None:
     except Exception:
         return None
 
+def parse_display_name_mfr(mfr_bytes: bytes) -> float | None:
+    parsed_name = parse_name_from_mfr(mfr_payload) if mfr_payload else "ecoControl Heater"
+    parsed_temp = parse_floor_temp_from_mfr(mfr_payload) if mfr_payload else None
+    p_flag = mfr_payload[2] if len(mfr_payload) >= 3 else 0
+    is_heating_active = bool(p_flag & 0x80)
+    return "{parsed_name} ({parsed_temp}°C) {'🔥 Active (Heating)' if is_heating_active else '❄️ Idle (Balanced)'} [{device.address}]"
 
 def parse_thermostat_payload(
     raw_name: bytes,
@@ -179,11 +185,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Active polling is disabled (0). Relying entirely on passive updates for %s", address)
             return coordinator.data if coordinator.data else initial_data
 
-        ble_device = bluetooth.async_ble_device_from_address(hass, address)
-        if not ble_device:
+        service_info = bluetooth.async_last_service_info(hass, address)
+        if not service_info or not service_info.device:
             if coordinator.data:
                 return coordinator.data
-            raise UpdateFailed(f"Thermostat {address} not found in tracking histories")
+            _LOGGER.debug("Thermostat %s not yet discovered on startup, falling back to initial structure", address)
+            return initial_data
+
+        ble_device = service_info.device
 
         # Extract flags from current advertisement if available to sync target properties
         current_adv = bluetooth.async_last_service_info(hass, address)
@@ -224,13 +233,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     )
                     return coordinator.data
                 
-                # Device is unreachable/new: step down active polling to save system resources
+                # Device is unreachable/new: fallback gracefully to passive setup
                 _LOGGER.warning(
                     "Initial active connection failed for thermostat %s [%s] (%s). Shifting integration to pure passive background scanning mode.", 
                     fallback_name, address, err
                 )
                 coordinator.update_interval = None
-                raise UpdateFailed(f"Initial GATT link timed out for ecoControl thermostat {fallback_name} [{address}]: {err}")
+                return coordinator.data if coordinator.data else initial_data
 
     # Read live user scan updates
     active_interval = entry.options.get(CONF_POLL_INTERVAL, entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
