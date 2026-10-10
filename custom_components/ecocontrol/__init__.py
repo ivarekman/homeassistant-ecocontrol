@@ -318,6 +318,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         updated_data["is_heating"] = is_heating
 
         coordinator.async_set_updated_data(updated_data)
+        coordinator.async_update_listeners()
            
         if coordinator.thermostat_state == ThermostatState.INITIAL_SETUP:
             #Prevent race conditions on startup
