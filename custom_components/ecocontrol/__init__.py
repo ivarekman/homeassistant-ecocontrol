@@ -80,12 +80,21 @@ def parse_floor_temp_from_mfr(mfr_bytes: bytes) -> float | None:
     except Exception:
         return None
 
-def parse_display_name_mfr(mfr_bytes: bytes) -> float | None:
-    parsed_name = parse_name_from_mfr(mfr_payload) if mfr_payload else "ecoControl Heater"
-    parsed_temp = parse_floor_temp_from_mfr(mfr_payload) if mfr_payload else None
-    p_flag = mfr_payload[2] if len(mfr_payload) >= 3 else 0
+def parse_discovery_labels(mfr_bytes: bytes, address: str) -> tuple[str, str]:
+    """Extract payload into (short_name, display_name) tuple."""
+    parsed_name = parse_name_from_mfr(mfr_bytes) or "ecoControl Thermostat"
+    parsed_temp = parse_floor_temp_from_mfr(mfr_bytes)
+    p_flag = mfr_bytes[2] if mfr_bytes and len(mfr_bytes) >= 3 else 0
     is_heating_active = bool(p_flag & 0x80)
-    return "{parsed_name} ({parsed_temp}°C) {'🔥 Active (Heating)' if is_heating_active else '❄️ Idle (Balanced)'} [{device.address}]"
+
+    status = "🔥 Active (Heating)" if is_heating_active else "❄️ Idle (Balanced)"
+    
+    if parsed_temp is not None:
+        display_name = f"{parsed_name} ({parsed_temp}°C) {status} [{address}]"
+    else:
+        display_name = f"{parsed_name} [{address}]"
+        
+    return parsed_name, display_name
 
 def parse_thermostat_payload(
     raw_name: bytes,

@@ -14,8 +14,7 @@ from . import (
     DOMAIN, 
     DEFAULT_POLL_INTERVAL, 
     CONF_POLL_INTERVAL,
-    parse_name_from_mfr,
-    parse_floor_temp_from_mfr
+    parse_discovery_labels
 )
 
 ECOCONTROL_MFR_ID = 1162
@@ -96,16 +95,10 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 if ECOCONTROL_MFR_ID in adv.manufacturer_data:
                     mfr_payload = adv.manufacturer_data[ECOCONTROL_MFR_ID]
-                    parsed_name = parse_name_from_mfr(mfr_payload)
-                    parsed_temp = parse_floor_temp_from_mfr(mfr_payload)
-                    p_flag = mfr_payload[2] if len(mfr_payload) >= 3 else 0
-                    is_heating_active = bool(p_flag & 0x80)
+                    clean_name, display_name = parse_discovery_labels(mfr_payload, device.address)
 
-                    if parsed_name:
-                        self._discovered_names[device.address] = parsed_name
-                        self._discovered_devices[device.address] = (
-                            f"{parsed_name} ({parsed_temp}°C) {'🔥 Active (Heating)' if is_heating_active else '❄️ Idle (Balanced)'} [{device.address}]"
-                        )
+                    self._discovered_names[device.address] = clean_name
+                    self._discovered_devices[device.address] = display_name
 
         if not self._discovered_devices:
             return self.async_show_form(
@@ -138,15 +131,9 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
 
         mfr_payload = discovery_info.advertisement.manufacturer_data.get(ECOCONTROL_MFR_ID)
-        parsed_name = parse_name_from_mfr(mfr_payload) if mfr_payload else "ecoControl Heater"
-        parsed_temp = parse_floor_temp_from_mfr(mfr_payload) if mfr_payload else None
+        clean_name, display_name = parse_discovery_labels(mfr_payload, address)
         
-        display_label = (
-            f"{parsed_name} ({parsed_temp}°C) [{address}]" 
-            if parsed_temp else f"{parsed_name} [{address}]"
-        )
-        
-        self._discovered_device = (address, parsed_name, display_label)
+        self._discovered_device = (address, clean_name, display_name)
         return await self.async_step_user()
 
     @staticmethod
