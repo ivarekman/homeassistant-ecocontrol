@@ -187,13 +187,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _async_update_data() -> dict[str, Any]:
         """Fetch the latest high-resolution metrics from active GATT registers."""
-        active_interval = entry.options.get(CONF_POLL_INTERVAL, entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
-        
-        # Guard condition: Explicitly disable active scanning routine if configuration is set to 0
-        if active_interval == 0:
+       
+        # Dynamically fetch the interval directly from the live coordinator configuration
+        if coordinator.update_interval is None:
             _LOGGER.debug("Active polling is disabled (0). Relying entirely on passive updates for %s", address)
-            return coordinator.data if (coordinator.data and coordinator.data.get("floor_temp") is not None) else initial_data
-
+            return coordinator.data if coordinator.data else initial_data
+        
         service_info = bluetooth.async_last_service_info(hass, address)
         if not service_info or not service_info.device:
             if coordinator.data:
@@ -261,7 +260,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_method=_async_update_data,
     )
     coordinator.async_set_updated_data(initial_data)
-
+    entry.async_on_unload(entry.add_update_listener(update_listener))
+    
     # Callback parsing handle for over-the-air passive advertisements
     @callback
     def _async_handle_bluetooth_advertisement(
@@ -302,6 +302,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 configured_interval
             )
             coordinator.update_interval = timedelta(seconds=configured_interval)
+            coordinator.hass.async_create_task(coordinator.async_refresh())
 
     # Register passive advertisement listener filter matched specifically to this device's MAC address
     entry.async_on_unload(
@@ -313,19 +314,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
-    async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Handle updates made inside the dynamic settings integrations Options Flow UI."""
-        new_active = int(entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
-        _LOGGER.info("Updating ecoControl active interval loop to: %s seconds", new_active)
-        
-        coordinator.update_interval = timedelta(seconds=new_active) if new_active > 0 else None
-        await coordinator.async_refresh()
-
-    entry.async_on_unload(entry.add_update_listener(update_listener))
+    hass.data[DOMAIN][entry.entry_id] = coordinator
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     
     # Try setting up data on startup. If active connection fails, it falls back gracefully
     if active_interval > 0:
-        await coordinator.async_refresh()
+        entry.async_create_background_task(
+            hass, 
+            coordinator.async_refresh(), 
+            "ecocontrol-initial-active-poll"
+        )
     else:
         # Check background cache for immediate startup metrics if active scanning is disabled
         last_adv = bluetooth.async_last_service_info(hass, address)
@@ -334,11 +332,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         else:
             coordinator.async_set_updated_data(initial_data)
         
-    hass.data[DOMAIN][entry.entry_id] = coordinator
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
+async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle updates made inside the dynamic settings integrations Options Flow UI."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry cleanly."""
