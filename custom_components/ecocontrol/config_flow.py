@@ -77,14 +77,13 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._discovered_devices = {addr: menu_label}
             self._discovered_names = {addr: clean_label}
         else:
+            self._discovered_devices = {}
+            self._discovered_names = {}
             try:
                 discovered = bluetooth.async_discovered_service_info(self.hass)
             except Exception as ex:
                 _LOGGER.error("[ecoControl] Global Bluetooth cache inspection crashed: %s", ex)
                 return self.async_abort(reason="bluetooth_scan_failed")
-            
-            self._discovered_devices = {}
-            self._discovered_names = {}
             
             already_configured = self._async_current_ids()
             
@@ -146,6 +145,7 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         clean_name, display_name = parse_discovery_labels(mfr_payload, address)
         
         self._discovered_device = (address, clean_name, display_name)
+        self.context["title_placeholders"] = {"name": clean_name}
         return await self.async_step_user()
 
     @staticmethod
