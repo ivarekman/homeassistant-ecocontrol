@@ -48,15 +48,15 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.warning(
                 "[ecoControl] Running in passive proxy fallback mode: Found remote listening "
                 "nodes, but no connectable local hardware adapters are available on the host"
-            )              
-
+            )
+        
         if user_input is not None:
             address = user_input.get("device")
 
             if address == "REFRESH_TRIGGER" or not address:
                 self._discovered_device = None
                 return await self.async_step_user(user_input=None)
-
+            
             if address in self._discovered_devices:
                 clean_name = self._discovered_names.get(address, "ecoControl Thermostat")
                 
@@ -73,7 +73,7 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_POLL_INTERVAL: 0 if bluetooth.async_scanner_count(self.hass, connectable=True) == 0 else DEFAULT_POLL_INTERVAL, 
                     }
                 )
-
+        
         if self._discovered_device:
             addr, clean_label, menu_label = self._discovered_device
             self._discovered_devices = {addr: menu_label}
@@ -84,13 +84,21 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception as ex:
                 _LOGGER.error("[ecoControl] Global Bluetooth cache inspection crashed: %s", ex)
                 return self.async_abort(reason="bluetooth_scan_failed")
-
+            
             self._discovered_devices = {}
             self._discovered_names = {}
-
+            
+            already_configured = self._async_current_ids()
+            
             for device in discovered:
                 adv = device.advertisement
+                
+                if device.address.replace(":", "").lower() in already_configured:
+                    # Exclude already configured devices
+                    continue
+
                 if not adv or not adv.manufacturer_data:
+                    # Exclude other than supported devices
                     continue
 
                 if ECOCONTROL_MFR_ID in adv.manufacturer_data:
@@ -127,7 +135,13 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle background discovery triggered by Home Assistant's central BLE engine."""
         address = discovery_info.address
-        await self.async_set_unique_id(address.replace(":", "").lower())
+        device_id = address.replace(":", "").lower()
+        
+        if device_id in self._async_current_ids():
+            #  Ignore automatic discovery  for existing entities
+            return self.async_abort(reason="already_configured")
+            
+        await self.async_set_unique_id(device_id)
         self._abort_if_unique_id_configured()
 
         mfr_payload = discovery_info.advertisement.manufacturer_data.get(ECOCONTROL_MFR_ID)
