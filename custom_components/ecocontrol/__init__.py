@@ -166,19 +166,39 @@ def parse_thermostat_payload(
         "operating_hours": operating_hours,
         "heating_hours": heating_hours,
     }
+
+def parse_data_from_mfr(current_data: dict[str, Any], mfr_bytes: bytes) -> dict[str, Any]:
+    """Updates and returns a state data dictionary with parsed manufacturer advertisement bytes."""
+    updated = {**current_data}
+    
+    p_name = parse_name_from_mfr(mfr_bytes)
+    p_floor = parse_floor_temp_from_mfr(mfr_bytes)
+    p_flag = mfr_bytes[2] if mfr_bytes and len(mfr_bytes) >= 3 else 0
+
+    if p_name:
+        updated["name"] = p_name
+    if p_floor is not None:
+        updated["floor_temp"] = p_floor
+        
+    updated["is_heating"] = bool(p_flag & 0x80)
+    return updated
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up ecoControl from a config entry created via UI."""
     hass.data.setdefault(DOMAIN, {})
     
     address = entry.data["address"]
     fallback_name = entry.data["default_name"]
+    poll_interval = entry.options.get(CONF_POLL_INTERVAL, entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
 
-    # Verify device presence on startup
+    # Verify device presence on startup and stall if expecting an active (gatt) connection
     service_info = bluetooth.async_last_service_info(hass, address)
-    if not service_info:
-        _LOGGER.debug("Thermostat %s [%s] not found in BLE cache. Delaying setup.", fallback_name, address)
-        raise ConfigEntryNotReady(f"Thermostat {address} has not been seen by Bluetooth adapters yet.")
-
+    has_connectable_scanners = bluetooth.async_scanner_count(hass, connectable=True) > 0
+    
+    if not has_connectable_scanners or (service_info and not service_info.connectable):
+        _LOGGER.info("No connectable paths available for %s. Forcing passive scanner mode.", address)
+        poll_interval = 0
+        
     # Initialize full fallback dictionary tracking state data
     initial_data = {
         "name": fallback_name,
@@ -195,23 +215,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "operating_hours": None,
         "heating_hours": None,
     }
+    
+    if service_info and service_info.advertisement and ECOCONTROL_MFR_ID in service_info.advertisement.manufacturer_data:
+        mfr_bytes = service_info.advertisement.manufacturer_data[ECOCONTROL_MFR_ID]
+        initial_data = parse_data_from_mfr(initial_data, mfr_bytes)
 
     async def _async_update_data() -> dict[str, Any]:
         """Fetch the data over GATT connection."""
 
+        # Track if active capabilities disappeared from the host ecosystem at runtime
+        if not bluetooth.async_scanner_count(hass, connectable=True):
+            _LOGGER.debug("No active connection hardware adapters online right now. Relying on passive ads for %s", address)
+            return coordinator.data if coordinator.data else initial_data
+            
         if coordinator.update_interval is None or coordinator.thermostat_state in (ThermostatState.GATT_DISABLED_BY_USER, ThermostatState.STARTUP_GATT_FAILED, ThermostatState.RUNTIME_FAILED):
             _LOGGER.debug("Active polling loop suspended or sleeping (State: %s). Relying on passive scan metrics for %s", coordinator.thermostat_state, address)
             return coordinator.data if coordinator.data else initial_data
               
-        service_info = bluetooth.async_last_service_info(hass, address)
-        if not service_info or not service_info.device:
-            if coordinator.data:
-                return coordinator.data
-            _LOGGER.debug("Thermostat %s not yet discovered on startup, falling back to initial structure", address)
-            return initial_data
-
-        ble_device = service_info.device
-
+        #Search for any connectable ble device
+        ble_device = bluetooth.async_ble_device_from_address(hass, address, connectable=True)
+        if not ble_device:
+            _LOGGER.debug("No active connection path available for %s. Counting on passive callback.", address)
+            return coordinator.data if coordinator.data else initial_data
+        
         # Extract flags from current advertisement if available to sync target properties
         current_adv = bluetooth.async_last_service_info(hass, address)
         p_flag = 0
@@ -304,19 +330,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         mfr_bytes = adv_data.manufacturer_data[ECOCONTROL_MFR_ID]
-        p_name = parse_name_from_mfr(mfr_bytes)
-        p_floor = parse_floor_temp_from_mfr(mfr_bytes)
-        p_flag = mfr_bytes[2] if mfr_bytes and len(mfr_bytes) >= 3 else 0
-        is_heating = bool(p_flag & 0x80)
-
-        # Merge extracted passive metrics update onto existing data context dict without wiping GATT metrics
-        updated_data = {**(coordinator.data or initial_data)}
-        if p_name:
-            updated_data["name"] = p_name
-        if p_floor is not None:
-            updated_data["floor_temp"] = p_floor
-        updated_data["is_heating"] = is_heating
-
+        base_data = coordinator.data or initial_data
+        updated_data = parse_data_from_mfr(base_data, mfr_bytes)
+        
         coordinator.async_set_updated_data(updated_data)
         coordinator.async_update_listeners()
            
@@ -332,8 +348,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # If a connection previously failed AND the user has not disabled active polling (interval > 0),
         # an advertisement packet proves the device is awake. Clear the flag and resume GATT loops.
         if configured_interval > 0 and coordinator.thermostat_state in (ThermostatState.STARTUP_GATT_FAILED, ThermostatState.RUNTIME_FAILED):
-            _LOGGER.info("Device %s spotted online via broadcast. Testing active GATT link recovery...", address)
-            coordinator.update_interval = timedelta(seconds=configured_interval)
+            if bluetooth.async_scanner_count(hass, connectable=True) > 0:
+                # Ensure a connectable path exists before defining update_interval
+                _LOGGER.info("Device %s spotted online via broadcast. Testing active GATT link recovery...", address)
+                coordinator.update_interval = timedelta(seconds=configured_interval)
             
             # Fire a background execution pass. If it succeeds, the update logic sets the state to OK.
             # If it fails, the exception block cleanly wipes the interval again and preserves the failure state.
