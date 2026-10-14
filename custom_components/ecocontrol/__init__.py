@@ -226,22 +226,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 coordinator.thermostat_state = ThermostatState.STARTUP_GATT_FAILED
             elif coordinator.thermostat_state == ThermostatState.OK:
                 coordinator.thermostat_state = ThermostatState.RUNTIME_FAILED
-            raise UpdateFailed("No connectable scanners online right now.")
             
-        if coordinator.update_interval is None or coordinator.thermostat_state in (ThermostatState.GATT_DISABLED_BY_USER, ThermostatState.STARTUP_GATT_FAILED, ThermostatState.RUNTIME_FAILED):
+            return coordinator.data if coordinator.data else initial_data
+           
+        if (
+            coordinator.update_interval == 0 
+            or coordinator.update_interval is None
+            or coordinator.thermostat_state in (
+                ThermostatState.GATT_DISABLED_BY_USER, 
+                ThermostatState.STARTUP_GATT_FAILED, 
+                ThermostatState.RUNTIME_FAILED
+            )
+        ):
             _LOGGER.debug("Active polling loop suspended or sleeping (State: %s). Relying on passive scan metrics for %s", coordinator.thermostat_state, address)
             
-            # Use current service info cache to populate variables if the active loop is sleeping
             current_adv = bluetooth.async_last_service_info(hass, address)
             if current_adv and current_adv.advertisement and ECOCONTROL_MFR_ID in current_adv.advertisement.manufacturer_data:
                 mfr_data = current_adv.advertisement.manufacturer_data[ECOCONTROL_MFR_ID]
                 return parse_data_from_mfr(coordinator.data or initial_data, mfr_data)
+            
             return coordinator.data if coordinator.data else initial_data
-              
+            
         #Search for any connectable ble device
         ble_device = bluetooth.async_ble_device_from_address(hass, address, connectable=True)
         if not ble_device:
             _LOGGER.debug("No active connection path available for %s. Counting on passive callback.", address)
+            if coordinator.thermostat_state == ThermostatState.INITIAL_SETUP:
+                coordinator.thermostat_state = ThermostatState.STARTUP_GATT_FAILED
+                coordinator.update_interval = None
+                raise UpdateFailed(f"Initial setup active path connection failed to address {address}")
+            elif coordinator.thermostat_state == ThermostatState.OK:
+                coordinator.thermostat_state = ThermostatState.RUNTIME_FAILED
+            
+            coordinator.update_interval = None
             return coordinator.data if coordinator.data else initial_data
         
         # Extract flags from current advertisement if available to sync target properties
@@ -277,6 +294,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return parsed
                     
         except Exception as err:
+            if coordinator.thermostat_state == ThermostatState.GATT_DISABLED_BY_USER:
+                _LOGGER.debug("Bypassing GATT exception state update; user has disabled polling.")
+                return coordinator.data if coordinator.data else initial_data
+                
             if coordinator.thermostat_state == ThermostatState.INITIAL_SETUP:
                 _LOGGER.info("Initial GATT connection failed for %s [%s] (%s). Suspending active loop.", fallback_name, address, err)
                 coordinator.thermostat_state = ThermostatState.STARTUP_GATT_FAILED
@@ -285,6 +306,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 coordinator.thermostat_state = ThermostatState.RUNTIME_FAILED
             
             coordinator.update_interval = None
+            
+            if coordinator.data:
+                _LOGGER.debug("GATT failed for %s; keeping entities active via cached metrics", address)
+                return coordinator.data
+                
             raise UpdateFailed(err) from err
 
     # Read live user scan updates
@@ -348,7 +374,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.info("Device %s spotted online via broadcast. Testing active GATT link recovery...", address)
                 coordinator.update_interval = timedelta(seconds=configured_interval)
                 coordinator.thermostat_state = ThermostatState.INITIAL_SETUP
-                coordinator.hass.async_create_task(coordinator.async_refresh())
             else:
                 _LOGGER.debug("Passive packet received for %s. System lacks active adapters; maintaining passive tracking.", address)
 
@@ -366,19 +391,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     
     async def _async_startup_poll() -> None:
-        """Execute the initial integration configuration connection check."""
+        """Execute the initial integration configuration connection check out-of-band."""
         try:
             await coordinator.async_refresh()
-            # Transition to OK only if the active GATT fetch completed with zero exceptions
             if coordinator.thermostat_state == ThermostatState.INITIAL_SETUP:
                 coordinator.thermostat_state = ThermostatState.OK
-        except UpdateFailed:
-            # The exception was raised by us in _async_update_data. State should already be updated correctly
-            pass
         except Exception as err:
-            _LOGGER.error("Unexpected error during startup poll for %s: %s", address, err)
-            coordinator.thermostat_state = ThermostatState.STARTUP_GATT_FAILED
-            coordinator.update_interval = None
+            _LOGGER.debug("Startup active poll skipped or dropped out gracefully: %s", err)
+            if coordinator.thermostat_state == ThermostatState.INITIAL_SETUP:
+                coordinator.thermostat_state = ThermostatState.STARTUP_GATT_FAILED
+                coordinator.update_interval = None
             
     # Try setting up data on startup. If active connection fails, it falls back gracefully
     if poll_interval > 0 and coordinator.thermostat_state == ThermostatState.INITIAL_SETUP:
