@@ -39,7 +39,7 @@ class EcoControlConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         # Check for active GATT connection capabilities
-        if bluetooth.async_scanner_count(self.hass) == 0:
+        if bluetooth.async_scanner_count(self.hass, connectable=False) == 0:
             _LOGGER.info("[ecoControl] Setup blocked: No Bluetooth adapters or remote proxies found")
             return self.async_abort(reason="bluetooth_not_available")
     
